@@ -3,10 +3,17 @@ import type {ModApi} from '@commandcode/harness';
 const NOTIFY_TIMEOUT_MS = 2_000;
 const PROMPT_GRACE_MS = 8_000;
 
+interface Disposable {
+	dispose(): void;
+}
+
 interface PendingPrompt {
 	toolName: string;
 	body: string;
-	timer: ReturnType<typeof setTimeout>;
+	timer?: Disposable;
+	fired: boolean;
+	canceled: boolean;
+	notificationId?: string;
 }
 
 function projectName(cwd: string): string {
@@ -45,29 +52,21 @@ function promptBody(
 	return oneLine(isSafetyPrompt ? `Safety approval: ${what}` : what);
 }
 
-async function notify(
+async function cmux(
 	cmd: ModApi,
-	title: string,
-	subtitle: string,
-	body: string,
-): Promise<void> {
-	// Only notify when the session runs inside a cmux-managed surface.
-	if (!process.env.CMUX_SURFACE_ID) return;
+	args: string[],
+): Promise<{stdout?: string} | undefined> {
+	// Only run when the session is inside a cmux-managed surface.
+	if (!process.env.CMUX_SURFACE_ID) return undefined;
 
 	let timer: ReturnType<typeof setTimeout> | undefined;
-	const timeout = new Promise<void>(resolve => {
-		timer = setTimeout(resolve, NOTIFY_TIMEOUT_MS);
+	const timeout = new Promise<undefined>(resolve => {
+		timer = setTimeout(() => resolve(undefined), NOTIFY_TIMEOUT_MS);
 	});
 
 	try {
-		await Promise.race([
-			cmd
-				.exec({
-					command: 'cmux',
-					args: ['notify', '--title', title, '--subtitle', subtitle, '--body', body],
-				})
-				.then(() => undefined)
-				.catch(() => undefined),
+		return await Promise.race([
+			cmd.exec({command: 'cmux', args}).catch(() => undefined),
 			timeout,
 		]);
 	} finally {
@@ -75,15 +74,79 @@ async function notify(
 	}
 }
 
+async function notify(
+	cmd: ModApi,
+	title: string,
+	subtitle: string,
+	body: string,
+): Promise<string | undefined> {
+	const result = await cmux(cmd, [
+		'notify',
+		'--title',
+		title,
+		'--subtitle',
+		subtitle,
+		'--body',
+		body,
+		'--json',
+	]);
+	if (!result?.stdout) return undefined;
+
+	try {
+		const parsed = JSON.parse(result.stdout) as {id?: unknown};
+		return typeof parsed.id === 'string' ? parsed.id : undefined;
+	} catch {
+		return undefined;
+	}
+}
+
+async function dismiss(cmd: ModApi, id: string): Promise<void> {
+	await cmux(cmd, ['dismiss-notification', '--id', id]);
+}
+
 export default function (cmd: ModApi): void {
 	const project = projectName(cmd.cwd);
 	const pending: PendingPrompt[] = [];
 
+	const remove = (entry: PendingPrompt): void => {
+		const index = pending.indexOf(entry);
+		if (index !== -1) pending.splice(index, 1);
+	};
+
+	const post = async (entry: PendingPrompt): Promise<void> => {
+		const id = await notify(
+			cmd,
+			'Command Code — approval needed',
+			project,
+			entry.body,
+		);
+		entry.notificationId = id;
+
+		if (entry.canceled || !id) {
+			if (entry.canceled && id) await dismiss(cmd, id);
+			remove(entry);
+		}
+	};
+
 	const cancel = (toolName?: string): void => {
 		for (let i = pending.length - 1; i >= 0; i--) {
-			if (toolName !== undefined && pending[i].toolName !== toolName) continue;
-			clearTimeout(pending[i].timer);
-			pending.splice(i, 1);
+			const entry = pending[i];
+			if (toolName !== undefined && entry.toolName !== toolName) continue;
+
+			entry.canceled = true;
+			entry.timer?.dispose();
+
+			if (!entry.fired) {
+				pending.splice(i, 1);
+				continue;
+			}
+
+			if (entry.notificationId) {
+				void dismiss(cmd, entry.notificationId);
+				pending.splice(i, 1);
+			}
+			// Otherwise the notification request is still in flight; post()
+			// dismisses it when the id arrives.
 		}
 	};
 
@@ -98,14 +161,19 @@ export default function (cmd: ModApi): void {
 	cmd.hooks({
 		onPermissionRequest({toolName, input, isSafetyPrompt}) {
 			const body = promptBody(toolName, input ?? {}, isSafetyPrompt);
-			const timer = setTimeout(() => {
-				const index = pending.findIndex(entry => entry.timer === timer);
-				if (index === -1) return;
-				pending.splice(index, 1);
-				void notify(cmd, 'Command Code — approval needed', project, body);
-			}, PROMPT_GRACE_MS);
+			const entry: PendingPrompt = {
+				toolName,
+				body,
+				fired: false,
+				canceled: false,
+			};
 
-			pending.push({toolName, body, timer});
+			entry.timer = cmd.clock.after(PROMPT_GRACE_MS, () => {
+				entry.fired = true;
+				void post(entry);
+			});
+
+			pending.push(entry);
 			return undefined;
 		},
 

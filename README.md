@@ -1,5 +1,7 @@
 # cmd-mod-cmux-notify
 
+[![CI](https://github.com/Hashimlokasher/cmd-mod-cmux-notify/actions/workflows/ci.yml/badge.svg)](https://github.com/Hashimlokasher/cmd-mod-cmux-notify/actions/workflows/ci.yml)
+
 cmux notifications for [Command Code](https://commandcode.ai): a macOS banner when a turn
 finishes, and an alert when a permission prompt has been waiting for you.
 
@@ -11,7 +13,8 @@ This is a [Command Code mod](https://commandcode.ai/docs/mods) for
 - **Turn finished** — notifies with the final assistant message (truncated to 200 characters).
   Interrupted runs are skipped.
 - **Approval needed** — when a permission prompt has been waiting for 8 seconds, notifies with
-  the tool and file path where available. The mod never answers the prompt; it returns
+  the tool and file path where available. The alert is dismissed automatically when the tool
+  starts, is denied, is blocked, or the run ends. The mod never answers the prompt; it returns
   `undefined`, so you always decide.
 
 Auto-accepted calls stay quiet: the alert is cancelled as soon as the tool starts, is denied,
@@ -27,15 +30,10 @@ for approval".
 - cmux on macOS, with Command Code launched inside a cmux terminal
 - `cmux` on `PATH` (the app ships it at `/Applications/cmux.app/Contents/Resources/bin/cmux`)
 
-No network access, no dependencies, no build step.
+The mod has no runtime dependencies or build step. The test suite uses `jiti` as a dev
+ dependency.
 
 ## Install
-
-From npm:
-
-```bash
-cmd mods add cmd-mod-cmux-notify -g
-```
 
 From GitHub:
 
@@ -54,13 +52,25 @@ Drop `index.ts` into `~/.commandcode/mods/` for a user-scope install without a p
 ## How it works
 
 - `hooks.onPermissionRequest` schedules a notification after `PROMPT_GRACE_MS` (8s). The
-  `tool_running`, `tool_denied`, `tool_hook_blocked`, and `run_end` events cancel it.
+  `tool_running`, `tool_denied`, `tool_hook_blocked`, and `run_end` events cancel it. If the
+  notification was already posted, its id (from `cmux notify --json`) is passed to
+  `cmux dismiss-notification`, so a resolved prompt does not leave a stale alert behind.
 - `hooks.onRunEnd` posts the completion notification.
 - `cmd.exec({command: 'cmux', args: ['notify', ...]})` sends the notification. cmux resolves
   the target from `CMUX_WORKSPACE_ID` / `CMUX_SURFACE_ID`, so it lands on the calling pane.
 - Every `cmux notify` call is capped at 2 seconds, and failures are ignored.
 
 The grace window and timeout are constants at the top of `index.ts` if you want to tune them.
+
+## Development
+
+```bash
+npm install --include=dev
+npm test
+```
+
+The tests use Node's built-in test runner with a mock `ModApi` and mock timers. They do not
+need cmux or Command Code. CI runs `npm ci --include=dev` and `npm test` on Ubuntu.
 
 ## Verify
 

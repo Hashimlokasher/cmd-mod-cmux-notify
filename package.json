@@ -1,6 +1,6 @@
 {
   "name": "cmd-mod-cmux-notify",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "cmux notifications for Command Code: banners when a turn finishes or a permission prompt is waiting.",
   "keywords": [
     "cmd-mod",
@@ -33,5 +33,11 @@
     "mods": [
       "./index.ts"
     ]
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "jiti": "^2.7.0"
   }
 }
