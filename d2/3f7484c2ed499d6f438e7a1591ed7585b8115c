@@ -1,0 +1,38 @@
+.github/workflows/ci.yml
+  h_2be081509d88e0 15-16,18,21-23
+.github/workflows/release.yml
+  h_2be081509d88e0 1-17
+CHANGELOG.md
+  h_2be081509d88e0 1-16
+README.md
+  h_2be081509d88e0 15,21-22,54-61,63-65,67,74-76,80-82,86-87,91-92,107-109
+eslint.config.mjs
+  h_2be081509d88e0 1-18
+index.ts
+  h_2be081509d88e0 4-23,32,38-43,80-83,87,106-113,148-152,158-165,167,182-225,232,249-250,260-261,267
+package-lock.json
+  h_2be081509d88e0 12-17,20-975,985-1364
+package.json
+  h_2be081509d88e0 30-31,40-44,47-52
+test/integration/live-host.test.mjs
+  h_2be081509d88e0 1-205
+test/integration/mod.integration.test.mjs
+  h_2be081509d88e0 3,45-63,118-128,130,134-139,147,151-152,160-163,167-168,189-190
+test/unit/mod.test.mjs
+  h_2be081509d88e0 13-23,28,31,41-53,55-68,78,114-117,123-127,154,167,170,173,176,185,195-283,289,294,297,309,319,322,328,338,346,354,356,362,370,408,416,430,445,455-458,466,480-537,542-596,602-605,608-615,621-675
+tsconfig.json
+  h_2be081509d88e0 1-15
+types/commandcode-harness.d.ts
+  h_2be081509d88e0 1-56
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d23f7484c2ed499d6f438e7a1591ed7585b8115c",
+  "prompts": {},
+  "humans": {
+    "h_2be081509d88e0": {
+      "author": "Hashim Lokasher <hashimlokasher@gmail.com>"
+    }
+  }
+}
