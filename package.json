@@ -1,0 +1,37 @@
+{
+  "name": "cmd-mod-cmux-notify",
+  "version": "0.1.0",
+  "description": "cmux notifications for Command Code: banners when a turn finishes or a permission prompt is waiting.",
+  "keywords": [
+    "cmd-mod",
+    "cmd-mod-hook",
+    "command-code",
+    "cmux",
+    "notifications",
+    "macos",
+    "permissions"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "Hashim Lokasher",
+    "url": "https://github.com/Hashimlokasher"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Hashimlokasher/cmd-mod-cmux-notify.git"
+  },
+  "homepage": "https://github.com/Hashimlokasher/cmd-mod-cmux-notify#readme",
+  "bugs": {
+    "url": "https://github.com/Hashimlokasher/cmd-mod-cmux-notify/issues"
+  },
+  "files": [
+    "index.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "commandcode": {
+    "mods": [
+      "./index.ts"
+    ]
+  }
+}
