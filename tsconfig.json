@@ -1,0 +1,15 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "ESNext",
+		"moduleResolution": "Bundler",
+		"strict": true,
+		"noEmit": true,
+		"skipLibCheck": true,
+		"types": ["node"],
+		"paths": {
+			"@commandcode/harness": ["./types/commandcode-harness.d.ts"]
+		}
+	},
+	"include": ["index.ts", "types/**/*.d.ts"]
+}

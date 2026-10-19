@@ -27,7 +27,8 @@
   "files": [
     "index.ts",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "commandcode": {
     "mods": [
@@ -36,9 +37,18 @@
   },
   "scripts": {
     "test": "node --test test/unit/*.test.mjs",
-    "test:integration": "CMUX_INTEGRATION=1 node --test test/integration/*.test.mjs"
+    "test:integration": "CMUX_INTEGRATION=1 node --test test/integration/*.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test:coverage": "node --test --experimental-test-coverage --test-coverage-lines=93 --test-coverage-branches=90 --test-coverage-functions=95 test/unit/*.test.mjs",
+    "test:live-host": "CMUX_INTEGRATION=1 CMUX_LIVE_HOST=1 node --test test/integration/live-host.test.mjs"
   },
   "devDependencies": {
-    "jiti": "^2.7.0"
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^26.6.5",
+    "eslint": "^10.13.0",
+    "jiti": "^2.7.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.71.2"
   }
 }

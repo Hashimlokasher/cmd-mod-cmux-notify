@@ -10,14 +10,25 @@ const flush = async () => {
 	await new Promise(resolve => setImmediate(resolve));
 };
 
-function createHarness({notifyStdout} = {}) {
+function createHarness({
+	notifyStdout,
+	screens = [''],
+	screenFails = false,
+	hangNotify = false,
+	notifyFails = false,
+	notifyDelayMs = 0,
+	notifyRejects = false,
+	screenRejects = false,
+	cwd = '/Users/test/project',
+} = {}) {
 	const hooks = {};
 	const events = new Map();
 	const calls = [];
 	let nextId = 1;
+	let screenIndex = 0;
 
 	const cmd = {
-		cwd: '/Users/test/project',
+		cwd,
 		hooks(value) {
 			Object.assign(hooks, value);
 		},
@@ -27,7 +38,34 @@ function createHarness({notifyStdout} = {}) {
 		},
 		async exec({command, args}) {
 			calls.push({command, args});
+
+			if (command === 'cmux' && args[0] === 'read-screen') {
+				if (screenRejects) return Promise.reject(new Error('no screen'));
+				if (screenFails) {
+					return {stdout: '', stderr: 'screen unavailable', code: 1};
+				}
+				return {
+					stdout: screens[Math.min(screenIndex++, screens.length - 1)] ?? '',
+					stderr: '',
+					code: 0,
+				};
+			}
+
 			if (command === 'cmux' && args[0] === 'notify') {
+				if (hangNotify) return new Promise(() => {});
+				if (notifyRejects) return Promise.reject(new Error('no cmux'));
+				if (notifyDelayMs > 0) {
+					return new Promise(resolve => {
+						setTimeout(() => {
+							resolve({
+								stdout: JSON.stringify({id: `notification-${nextId++}`}),
+								stderr: '',
+								code: 0,
+							});
+						}, notifyDelayMs);
+					});
+				}
+				if (notifyFails) return {stdout: '', stderr: 'nope', code: 1};
 				return {
 					stdout:
 						notifyStdout === undefined
@@ -37,6 +75,7 @@ function createHarness({notifyStdout} = {}) {
 					code: 0,
 				};
 			}
+
 			return {stdout: '', stderr: '', code: 0};
 		},
 		clock: {
@@ -72,9 +111,18 @@ function dismissals(calls) {
 		.map(call => arg(call, '--id'));
 }
 
+function screenReads(calls) {
+	return calls.filter(call => call.command === 'cmux' && call.args[0] === 'read-screen');
+}
+
 function useTimers(t) {
 	mock.timers.enable({apis: ['setTimeout']});
 	t.after(() => mock.timers.reset());
+}
+
+async function tick(ms) {
+	mock.timers.tick(ms);
+	await flush();
 }
 
 test.beforeEach(() => {
@@ -103,7 +151,7 @@ test('registers both hooks and the cancellation events', async () => {
 	]);
 });
 
-test('auto-accepted calls stay silent', async t => {
+test('auto-accepted calls stay silent and never read the screen', async t => {
 	useTimers(t);
 	const mod = await loadMod();
 	const harness = createHarness();
@@ -116,17 +164,16 @@ test('auto-accepted calls stay silent', async t => {
 	});
 	harness.events.get('tool_running')({toolName: 'shell_command'});
 
-	mock.timers.tick(8000);
-	await flush();
+	await tick(8000);
 
 	assert.deepEqual(notifications(harness.calls), []);
-	assert.deepEqual(dismissals(harness.calls), []);
+	assert.deepEqual(screenReads(harness.calls), []);
 });
 
-test('a prompt notifies only after the grace window', async t => {
+test('detects the prompt on the first screen check', async t => {
 	useTimers(t);
 	const mod = await loadMod();
-	const harness = createHarness();
+	const harness = createHarness({screens: ['Execute Shell Command']});
 	mod(harness.cmd);
 
 	harness.hooks.onPermissionRequest({
@@ -135,12 +182,7 @@ test('a prompt notifies only after the grace window', async t => {
 		isSafetyPrompt: false,
 	});
 
-	mock.timers.tick(7999);
-	await flush();
-	assert.equal(notifications(harness.calls).length, 0);
-
-	mock.timers.tick(1);
-	await flush();
+	await tick(1500);
 
 	assert.deepEqual(notifications(harness.calls), [
 		{
@@ -150,21 +192,109 @@ test('a prompt notifies only after the grace window', async t => {
 			json: true,
 		},
 	]);
+	assert.equal(screenReads(harness.calls).length, 1);
+
+	await tick(6500);
+	assert.equal(notifications(harness.calls).length, 1, 'fallback should be cleared');
+});
+
+test('detects the prompt on the second screen check', async t => {
+	useTimers(t);
+	const mod = await loadMod();
+	const harness = createHarness({
+		screens: ['Ask your question', 'Command Code needs to execute touch report.txt.'],
+	});
+	mod(harness.cmd);
+
+	harness.hooks.onPermissionRequest({
+		toolName: 'shell_command',
+		input: {},
+		isSafetyPrompt: false,
+	});
+
+	await tick(1500);
+	assert.equal(notifications(harness.calls).length, 0);
+
+	await tick(2500);
+	assert.equal(notifications(harness.calls).length, 1);
+	assert.equal(screenReads(harness.calls).length, 2);
+});
+
+test('detects the prompt on the final screen check', async t => {
+	useTimers(t);
+	const mod = await loadMod();
+	const harness = createHarness({
+		screens: ['', '', 'Press ctrl+e to explain this command'],
+	});
+	mod(harness.cmd);
+
+	harness.hooks.onPermissionRequest({
+		toolName: 'shell_command',
+		input: {},
+		isSafetyPrompt: false,
+	});
+
+	await tick(1500);
+	await tick(2500);
+	assert.equal(notifications(harness.calls).length, 0);
+
+	await tick(2000);
+	assert.equal(notifications(harness.calls).length, 1);
+	assert.equal(screenReads(harness.calls).length, 3);
+});
+
+test('three readable checks with no prompt cancel the alert', async t => {
+	useTimers(t);
+	const mod = await loadMod();
+	const harness = createHarness({screens: ['Ask your question']});
+	mod(harness.cmd);
+
+	harness.hooks.onPermissionRequest({
+		toolName: 'shell_command',
+		input: {},
+		isSafetyPrompt: false,
+	});
+
+	await tick(1500);
+	await tick(2500);
+	await tick(2000);
+	await tick(2000);
+
+	assert.deepEqual(notifications(harness.calls), []);
+	assert.equal(screenReads(harness.calls).length, 3);
+});
+
+test('falls back when the screen cannot be read', async t => {
+	useTimers(t);
+	const mod = await loadMod();
+	const harness = createHarness({screenFails: true});
+	mod(harness.cmd);
+
+	harness.hooks.onPermissionRequest({
+		toolName: 'shell_command',
+		input: {},
+		isSafetyPrompt: false,
+	});
+
+	await tick(1500);
+	assert.equal(notifications(harness.calls).length, 0);
+
+	await tick(6500);
+	assert.equal(notifications(harness.calls).length, 1);
 });
 
 test('dismisses the exact alert when the tool starts', async t => {
 	useTimers(t);
 	const mod = await loadMod();
-	const harness = createHarness();
+	const harness = createHarness({screens: ['Execute Shell Command']});
 	mod(harness.cmd);
 
 	harness.hooks.onPermissionRequest({
 		toolName: 'shell_command',
-		input: {command: 'touch report.txt'},
+		input: {},
 		isSafetyPrompt: false,
 	});
-	mock.timers.tick(8000);
-	await flush();
+	await tick(1500);
 	assert.equal(notifications(harness.calls).length, 1);
 
 	harness.events.get('tool_running')({toolName: 'shell_command'});
@@ -176,7 +306,7 @@ test('dismisses the exact alert when the tool starts', async t => {
 test('denial before the window cancels the alert', async t => {
 	useTimers(t);
 	const mod = await loadMod();
-	const harness = createHarness();
+	const harness = createHarness({screens: ['Execute Shell Command']});
 	mod(harness.cmd);
 
 	harness.hooks.onPermissionRequest({
@@ -186,17 +316,16 @@ test('denial before the window cancels the alert', async t => {
 	});
 	harness.events.get('tool_denied')();
 
-	mock.timers.tick(8000);
-	await flush();
+	await tick(8000);
 
 	assert.deepEqual(notifications(harness.calls), []);
-	assert.deepEqual(dismissals(harness.calls), []);
+	assert.deepEqual(screenReads(harness.calls), []);
 });
 
 test('a hook block cancels the alert', async t => {
 	useTimers(t);
 	const mod = await loadMod();
-	const harness = createHarness();
+	const harness = createHarness({screens: ['Execute Shell Command']});
 	mod(harness.cmd);
 
 	harness.hooks.onPermissionRequest({
@@ -206,8 +335,7 @@ test('a hook block cancels the alert', async t => {
 	});
 	harness.events.get('tool_hook_blocked')();
 
-	mock.timers.tick(8000);
-	await flush();
+	await tick(8000);
 
 	assert.deepEqual(notifications(harness.calls), []);
 });
@@ -215,7 +343,7 @@ test('a hook block cancels the alert', async t => {
 test('file tools include the path in the body', async t => {
 	useTimers(t);
 	const mod = await loadMod();
-	const harness = createHarness();
+	const harness = createHarness({screens: ['Execute Shell Command']});
 	mod(harness.cmd);
 
 	harness.hooks.onPermissionRequest({
@@ -223,19 +351,15 @@ test('file tools include the path in the body', async t => {
 		input: {file_path: '/tmp/report.txt'},
 		isSafetyPrompt: false,
 	});
-	mock.timers.tick(8000);
-	await flush();
+	await tick(1500);
 
-	assert.equal(
-		notifications(harness.calls)[0].body,
-		'Write /tmp/report.txt',
-	);
+	assert.equal(notifications(harness.calls)[0].body, 'Write /tmp/report.txt');
 });
 
 test('safety prompts are labelled', async t => {
 	useTimers(t);
 	const mod = await loadMod();
-	const harness = createHarness();
+	const harness = createHarness({screens: ['Execute Shell Command']});
 	mod(harness.cmd);
 
 	harness.hooks.onPermissionRequest({
@@ -243,8 +367,7 @@ test('safety prompts are labelled', async t => {
 		input: {file_path: '~/.ssh/id_rsa'},
 		isSafetyPrompt: true,
 	});
-	mock.timers.tick(8000);
-	await flush();
+	await tick(1500);
 
 	assert.equal(
 		notifications(harness.calls)[0].body,
@@ -282,7 +405,7 @@ test('run end posts the final text and skips interrupted runs', async () => {
 test('run end dismisses a posted approval alert', async t => {
 	useTimers(t);
 	const mod = await loadMod();
-	const harness = createHarness();
+	const harness = createHarness({screens: ['Execute Shell Command']});
 	mod(harness.cmd);
 
 	harness.hooks.onPermissionRequest({
@@ -290,8 +413,7 @@ test('run end dismisses a posted approval alert', async t => {
 		input: {},
 		isSafetyPrompt: false,
 	});
-	mock.timers.tick(8000);
-	await flush();
+	await tick(1500);
 
 	await harness.hooks.onRunEnd({
 		result: {finalText: 'Approved and finished', stopReason: 'end_turn'},
@@ -305,7 +427,7 @@ test('run end dismisses a posted approval alert', async t => {
 test('cancels only the matching tool', async t => {
 	useTimers(t);
 	const mod = await loadMod();
-	const harness = createHarness();
+	const harness = createHarness({screens: ['Execute Shell Command']});
 	mod(harness.cmd);
 
 	harness.hooks.onPermissionRequest({
@@ -320,8 +442,7 @@ test('cancels only the matching tool', async t => {
 	});
 
 	harness.events.get('tool_running')({toolName: 'shell_command'});
-	mock.timers.tick(8000);
-	await flush();
+	await tick(1500);
 
 	const posted = notifications(harness.calls);
 	assert.equal(posted.length, 1);
@@ -331,7 +452,10 @@ test('cancels only the matching tool', async t => {
 test('malformed notify output is ignored', async t => {
 	useTimers(t);
 	const mod = await loadMod();
-	const harness = createHarness({notifyStdout: 'not-json'});
+	const harness = createHarness({
+		notifyStdout: 'not-json',
+		screens: ['Execute Shell Command'],
+	});
 	mod(harness.cmd);
 
 	harness.hooks.onPermissionRequest({
@@ -339,8 +463,7 @@ test('malformed notify output is ignored', async t => {
 		input: {},
 		isSafetyPrompt: false,
 	});
-	mock.timers.tick(8000);
-	await flush();
+	await tick(1500);
 
 	assert.equal(notifications(harness.calls).length, 1);
 
@@ -355,7 +478,7 @@ test('is a no-op outside cmux', async t => {
 	delete process.env.CMUX_SURFACE_ID;
 
 	const mod = await loadMod();
-	const harness = createHarness();
+	const harness = createHarness({screens: ['Execute Shell Command']});
 	mod(harness.cmd);
 
 	harness.hooks.onPermissionRequest({
@@ -363,8 +486,7 @@ test('is a no-op outside cmux', async t => {
 		input: {},
 		isSafetyPrompt: false,
 	});
-	mock.timers.tick(8000);
-	await flush();
+	await tick(8000);
 
 	await harness.hooks.onRunEnd({
 		result: {finalText: 'done', stopReason: 'end_turn'},
@@ -372,4 +494,183 @@ test('is a no-op outside cmux', async t => {
 	await flush();
 
 	assert.deepEqual(harness.calls, []);
+});
+
+test('labels edit, read, write, and unknown tools', async t => {
+	useTimers(t);
+	const mod = await loadMod();
+	const harness = createHarness({screens: ['Execute Shell Command']});
+	mod(harness.cmd);
+
+	const cases = [
+		{toolName: 'edit_file', input: {file_path: '/tmp/e.txt'}, body: 'Edit /tmp/e.txt'},
+		{toolName: 'read_file', input: {}, body: 'Read is waiting for approval'},
+		{toolName: 'write_file', input: {}, body: 'Write is waiting for approval'},
+		{toolName: 'custom_tool', input: {}, body: 'custom_tool is waiting for approval'},
+	];
+	for (const item of cases) {
+		harness.hooks.onPermissionRequest({
+			toolName: item.toolName,
+			input: item.input,
+			isSafetyPrompt: false,
+		});
+	}
+	await tick(1500);
+
+	const bodies = notifications(harness.calls).map(notification => notification.body);
+	for (const item of cases) assert.ok(bodies.includes(item.body), item.body);
+});
+
+test('uses the cwd when it has no final path segment', async () => {
+	const mod = await loadMod();
+	const harness = createHarness({cwd: '/'});
+	mod(harness.cmd);
+
+	await harness.hooks.onRunEnd({
+		result: {finalText: 'done', stopReason: 'end_turn'},
+	});
+	await flush();
+
+	assert.equal(notifications(harness.calls)[0].subtitle, '/');
+});
+
+test('falls back to the stop reason and truncates long text', async () => {
+	const mod = await loadMod();
+	const harness = createHarness();
+	mod(harness.cmd);
+
+	await harness.hooks.onRunEnd({
+		result: {finalText: '', stopReason: 'max_turns'},
+	});
+	await flush();
+	assert.equal(notifications(harness.calls)[0].body, 'Run ended: max_turns');
+
+	await harness.hooks.onRunEnd({
+		result: {finalText: 'a'.repeat(250), stopReason: 'end_turn'},
+	});
+	await flush();
+	const body = notifications(harness.calls)[1].body;
+	assert.equal(body.length, 200);
+	assert.ok(body.endsWith('…'));
+});
+
+test('times out a hung notify call', async t => {
+	useTimers(t);
+	const mod = await loadMod();
+	const harness = createHarness({hangNotify: true});
+	mod(harness.cmd);
+
+	const done = harness.hooks.onRunEnd({
+		result: {finalText: 'done', stopReason: 'end_turn'},
+	});
+	await tick(2000);
+	await done;
+
+	assert.deepEqual(dismissals(harness.calls), []);
+});
+
+test('run_end event dismisses a posted alert', async t => {
+	useTimers(t);
+	const mod = await loadMod();
+	const harness = createHarness({screens: ['Execute Shell Command']});
+	mod(harness.cmd);
+
+	harness.hooks.onPermissionRequest({
+		toolName: 'shell_command',
+		input: {},
+		isSafetyPrompt: false,
+	});
+	await tick(1500);
+
+	harness.events.get('run_end')();
+	await flush();
+
+	assert.deepEqual(dismissals(harness.calls), ['notification-1']);
+});
+
+test('denial after the alert posts dismisses it', async t => {
+	useTimers(t);
+	const mod = await loadMod();
+	const harness = createHarness({screens: ['Execute Shell Command']});
+	mod(harness.cmd);
+
+	harness.hooks.onPermissionRequest({
+		toolName: 'shell_command',
+		input: {},
+		isSafetyPrompt: false,
+	});
+	await tick(1500);
+	assert.equal(notifications(harness.calls).length, 1);
+
+	harness.events.get('tool_denied')();
+	await flush();
+
+	assert.deepEqual(dismissals(harness.calls), ['notification-1']);
+});
+
+test('a failed notify call is harmless', async () => {
+	const mod = await loadMod();
+	const harness = createHarness({notifyFails: true});
+	mod(harness.cmd);
+
+	await harness.hooks.onRunEnd({
+		result: {finalText: 'done', stopReason: 'end_turn'},
+	});
+	await flush();
+
+	assert.deepEqual(dismissals(harness.calls), []);
+});
+
+test('dismisses an alert that resolves while the notify is in flight', async t => {
+	useTimers(t);
+	const mod = await loadMod();
+	const harness = createHarness({
+		screens: ['Execute Shell Command'],
+		notifyDelayMs: 500,
+	});
+	mod(harness.cmd);
+
+	harness.hooks.onPermissionRequest({
+		toolName: 'shell_command',
+		input: {},
+		isSafetyPrompt: false,
+	});
+	await tick(1500);
+
+	harness.events.get('tool_running')({toolName: 'shell_command'});
+	await tick(500);
+	await flush();
+
+	assert.deepEqual(dismissals(harness.calls), ['notification-1']);
+});
+
+test('a rejected notify call is harmless', async () => {
+	const mod = await loadMod();
+	const harness = createHarness({notifyRejects: true});
+	mod(harness.cmd);
+
+	await harness.hooks.onRunEnd({
+		result: {finalText: 'done', stopReason: 'end_turn'},
+	});
+	await flush();
+
+	assert.deepEqual(dismissals(harness.calls), []);
+});
+
+test('a rejected screen read falls back to the timer', async t => {
+	useTimers(t);
+	const mod = await loadMod();
+	const harness = createHarness({screenRejects: true});
+	mod(harness.cmd);
+
+	harness.hooks.onPermissionRequest({
+		toolName: 'shell_command',
+		input: {},
+		isSafetyPrompt: false,
+	});
+	await tick(1500);
+	assert.equal(notifications(harness.calls).length, 0);
+
+	await tick(6500);
+	assert.equal(notifications(harness.calls).length, 1);
 });

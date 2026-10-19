@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import {execFile, execFileSync} from 'node:child_process';
+import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -40,6 +41,25 @@ const skipReason =
 				: false;
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+function createScreenShim(screen) {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cmux-screen-shim-'));
+	const realCmux = execFileSync('which', ['cmux'], {encoding: 'utf8'}).trim();
+	const script = [
+		'#!/bin/sh',
+		'if [ "$1" = "read-screen" ]; then',
+		"  cat <<'CMUX_SCREEN'",
+		screen,
+		'CMUX_SCREEN',
+		'  exit 0',
+		'fi',
+		`exec '${realCmux}' "$@"`,
+		'',
+	].join('\n');
+	const file = path.join(dir, 'cmux');
+	fs.writeFileSync(file, script, {mode: 0o755});
+	return dir;
+}
 
 function createRealHarness(cwd) {
 	const hooks = {};
@@ -95,11 +115,28 @@ async function cleanup(subtitle) {
 	}
 }
 
+async function waitForNotifications(subtitle, predicate, timeoutMs = 6_000) {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		const matches = (await listNotifications()).filter(
+			notification => notification.subtitle === subtitle,
+		);
+		if (predicate(matches) || Date.now() >= deadline) return matches;
+		await delay(250);
+	}
+}
+
 test(
-	'real cmux: approval alert posts and is dismissed when the tool starts',
+	'real cmux: screen-detected approval alert posts and is dismissed',
 	{skip: skipReason},
 	async () => {
 		const subtitle = `cmux-it-${process.pid}-${Date.now()}`;
+		const shimDir = createScreenShim(
+			'Execute Shell Command\nCommand Code needs to execute touch report.txt.',
+		);
+		const originalPath = process.env.PATH;
+		process.env.PATH = `${shimDir}:${originalPath}`;
+
 		const harness = createRealHarness(path.join(os.tmpdir(), subtitle));
 		const mod = await loadMod();
 		mod(harness.cmd);
@@ -107,27 +144,28 @@ test(
 		try {
 			harness.hooks.onPermissionRequest({
 				toolName: 'shell_command',
-				input: {command: 'echo integration'},
+				input: {command: 'touch report.txt'},
 				isSafetyPrompt: false,
 			});
 
-			await delay(9_000);
-
-			const posted = (await listNotifications()).filter(
-				notification => notification.subtitle === subtitle,
+			const posted = await waitForNotifications(subtitle, matches =>
+				matches.some(notification => notification.title.includes('approval')),
 			);
 			assert.equal(posted.length, 1, 'approval alert should be posted');
 			assert.equal(posted[0].title, 'Command Code — approval needed');
 			assert.equal(posted[0].body, 'Shell command is waiting for approval');
 
 			harness.events.get('tool_running')({toolName: 'shell_command'});
-			await delay(1_000);
 
-			const remaining = (await listNotifications()).filter(
-				notification => notification.subtitle === subtitle,
+			const remaining = await waitForNotifications(
+				subtitle,
+				matches => matches.length === 0,
+				4_000,
 			);
 			assert.deepEqual(remaining, [], 'alert should be dismissed');
 		} finally {
+			process.env.PATH = originalPath;
+			fs.rmSync(shimDir, {recursive: true, force: true});
 			await cleanup(subtitle);
 		}
 	},
@@ -148,8 +186,8 @@ test(
 				result: {finalText: marker, stopReason: 'end_turn'},
 			});
 
-			const posted = (await listNotifications()).filter(
-				notification => notification.subtitle === subtitle,
+			const posted = await waitForNotifications(subtitle, matches =>
+				matches.some(notification => notification.title.includes('done')),
 			);
 			assert.equal(posted.length, 1);
 			assert.equal(posted[0].title, 'Command Code — done');

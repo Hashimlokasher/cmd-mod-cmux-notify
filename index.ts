@@ -1,7 +1,26 @@
 import type {ModApi} from '@commandcode/harness';
 
 const NOTIFY_TIMEOUT_MS = 2_000;
-const PROMPT_GRACE_MS = 8_000;
+const PROMPT_CHECK_MS = 1_500;
+const PROMPT_RECHECK_MS = 2_500;
+const PROMPT_FINAL_CHECK_MS = 2_000;
+const FALLBACK_GRACE_MS = 8_000;
+
+const CHECK_DELAYS = [
+	PROMPT_CHECK_MS,
+	PROMPT_RECHECK_MS,
+	PROMPT_FINAL_CHECK_MS,
+];
+
+const PROMPT_MARKERS = [
+	'Execute Shell Command',
+	'Command Code needs to execute',
+	'Enter plan mode for read-only exploration and planning?',
+	'Enter act mode for',
+	'Approve ctrl+a',
+	'Run cmd --yolo to bypass all permissions',
+	'Press ctrl+e to explain this command',
+];
 
 interface Disposable {
 	dispose(): void;
@@ -10,10 +29,16 @@ interface Disposable {
 interface PendingPrompt {
 	toolName: string;
 	body: string;
-	timer?: Disposable;
+	timers: Disposable[];
 	fired: boolean;
 	canceled: boolean;
 	notificationId?: string;
+}
+
+interface CmuxResult {
+	stdout?: string;
+	stderr?: string;
+	code?: number;
 }
 
 function projectName(cwd: string): string {
@@ -52,10 +77,14 @@ function promptBody(
 	return oneLine(isSafetyPrompt ? `Safety approval: ${what}` : what);
 }
 
+function showsPrompt(screen: string): boolean {
+	return PROMPT_MARKERS.some(marker => screen.includes(marker));
+}
+
 async function cmux(
 	cmd: ModApi,
 	args: string[],
-): Promise<{stdout?: string} | undefined> {
+): Promise<CmuxResult | undefined> {
 	// Only run when the session is inside a cmux-managed surface.
 	if (!process.env.CMUX_SURFACE_ID) return undefined;
 
@@ -72,6 +101,14 @@ async function cmux(
 	} finally {
 		if (timer) clearTimeout(timer);
 	}
+}
+
+async function readScreen(cmd: ModApi): Promise<string | undefined> {
+	const result = await cmux(cmd, ['read-screen', '--lines', '40']);
+	if (!result || result.code !== 0 || typeof result.stdout !== 'string') {
+		return undefined;
+	}
+	return result.stdout;
 }
 
 async function notify(
@@ -108,12 +145,26 @@ export default function (cmd: ModApi): void {
 	const project = projectName(cmd.cwd);
 	const pending: PendingPrompt[] = [];
 
+	const clearTimers = (entry: PendingPrompt): void => {
+		for (const timer of entry.timers) timer.dispose();
+		entry.timers = [];
+	};
+
 	const remove = (entry: PendingPrompt): void => {
 		const index = pending.indexOf(entry);
 		if (index !== -1) pending.splice(index, 1);
 	};
 
+	const schedule = (
+		entry: PendingPrompt,
+		ms: number,
+		callback: () => void,
+	): void => {
+		entry.timers.push(cmd.clock.after(ms, callback));
+	};
+
 	const post = async (entry: PendingPrompt): Promise<void> => {
+		clearTimers(entry);
 		const id = await notify(
 			cmd,
 			'Command Code — approval needed',
@@ -128,13 +179,57 @@ export default function (cmd: ModApi): void {
 		}
 	};
 
+	const check = async (
+		entry: PendingPrompt,
+		attempt: number,
+	): Promise<void> => {
+		if (entry.canceled || entry.fired) return;
+
+		const screen = await readScreen(cmd);
+		if (entry.canceled || entry.fired) return;
+
+		// If the screen cannot be read, leave the fallback timer in place.
+		if (screen === undefined) return;
+
+		if (showsPrompt(screen)) {
+			entry.fired = true;
+			void post(entry);
+			return;
+		}
+
+		if (attempt + 1 < CHECK_DELAYS.length) {
+			schedule(entry, CHECK_DELAYS[attempt + 1], () => {
+				void check(entry, attempt + 1);
+			});
+			return;
+		}
+
+		// Three readable checks and no prompt: the host auto-accepted.
+		entry.canceled = true;
+		clearTimers(entry);
+		remove(entry);
+	};
+
+	const start = (entry: PendingPrompt): void => {
+		schedule(entry, PROMPT_CHECK_MS, () => {
+			void check(entry, 0);
+		});
+
+		// If the screen cannot be read, fall back to the conservative timer.
+		schedule(entry, FALLBACK_GRACE_MS, () => {
+			if (entry.canceled || entry.fired) return;
+			entry.fired = true;
+			void post(entry);
+		});
+	};
+
 	const cancel = (toolName?: string): void => {
 		for (let i = pending.length - 1; i >= 0; i--) {
 			const entry = pending[i];
 			if (toolName !== undefined && entry.toolName !== toolName) continue;
 
 			entry.canceled = true;
-			entry.timer?.dispose();
+			clearTimers(entry);
 
 			if (!entry.fired) {
 				pending.splice(i, 1);
@@ -151,8 +246,8 @@ export default function (cmd: ModApi): void {
 	};
 
 	// A real prompt blocks execution, so the tool only starts once a person
-	// answers. Auto-accepted calls start on their own; letting the grace window
-	// elapse before alerting avoids notifying for those.
+	// answers. Auto-accepted calls start on their own; the screen checks
+	// distinguish the two long before the fallback timer.
 	cmd.on('tool_running', ({toolName}) => cancel(toolName));
 	cmd.on('tool_denied', () => cancel());
 	cmd.on('tool_hook_blocked', () => cancel());
@@ -160,20 +255,16 @@ export default function (cmd: ModApi): void {
 
 	cmd.hooks({
 		onPermissionRequest({toolName, input, isSafetyPrompt}) {
-			const body = promptBody(toolName, input ?? {}, isSafetyPrompt);
 			const entry: PendingPrompt = {
 				toolName,
-				body,
+				body: promptBody(toolName, input ?? {}, isSafetyPrompt ?? false),
+				timers: [],
 				fired: false,
 				canceled: false,
 			};
 
-			entry.timer = cmd.clock.after(PROMPT_GRACE_MS, () => {
-				entry.fired = true;
-				void post(entry);
-			});
-
 			pending.push(entry);
+			start(entry);
 			return undefined;
 		},
 
