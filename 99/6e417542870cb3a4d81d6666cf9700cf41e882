@@ -1,0 +1,22 @@
+.github/workflows/ci.yml
+  h_2be081509d88e0 22
+README.md
+  h_2be081509d88e0 70-72,75-80
+package.json
+  h_2be081509d88e0 38-39
+test/integration/mod.integration.test.mjs
+  h_2be081509d88e0 1-173
+test/unit/mod.test.mjs
+  h_2be081509d88e0 6
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "996e417542870cb3a4d81d6666cf9700cf41e882",
+  "prompts": {},
+  "humans": {
+    "h_2be081509d88e0": {
+      "author": "Hashim Lokasher <hashimlokasher@gmail.com>"
+    }
+  }
+}
