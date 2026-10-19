@@ -3,7 +3,7 @@ import test, {mock} from 'node:test';
 import {createJiti} from 'jiti';
 
 const jiti = createJiti(import.meta.url);
-const loadMod = async () => (await jiti.import('../index.ts')).default;
+const loadMod = async () => (await jiti.import('../../index.ts')).default;
 
 const flush = async () => {
 	await new Promise(resolve => setImmediate(resolve));

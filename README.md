@@ -67,10 +67,17 @@ The grace window and timeout are constants at the top of `index.ts` if you want 
 ```bash
 npm install --include=dev
 npm test
+
+# Inside a cmux terminal. Posts real notifications, then cleans them up.
+npm run test:integration
 ```
 
-The tests use Node's built-in test runner with a mock `ModApi` and mock timers. They do not
-need cmux or Command Code. CI runs `npm ci --include=dev` and `npm test` on Ubuntu.
+The unit tests use Node's built-in test runner with a mock `ModApi` and mock timers. They do
+not need cmux or Command Code. CI runs `npm ci --include=dev` and `npm test` on Ubuntu.
+
+The integration tests exercise the real `cmux notify` / `dismiss-notification` path and
+`cmd mods inspect`; they skip automatically unless `CMUX_INTEGRATION=1` and `CMUX_SURFACE_ID`
+are set.
 
 ## Verify
 
