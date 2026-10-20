@@ -1,0 +1,14 @@
+README.md
+  h_2be081509d88e0 6,9-10,18-19,31-32,36,40,46-52,60-83,101-129,159,167,171-178
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "d3c86dbf5c909b51b17ab12c73ab290a8779ee84",
+  "prompts": {},
+  "humans": {
+    "h_2be081509d88e0": {
+      "author": "Hashim Lokasher <hashimlokasher@gmail.com>"
+    }
+  }
+}
